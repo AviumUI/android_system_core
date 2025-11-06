@@ -115,6 +115,7 @@ soong_config_module_type {
 
 libinit_cc_defaults {
     name: "init_defaults",
+    defaults : ["avium_init_defaults"],
     sanitize: {
         misc_undefined: ["signed-integer-overflow"],
     },
@@ -230,6 +231,30 @@ cc_library_headers {
     visibility: [":__subpackages__"],
 }
 
+soong_config_module_type {
+    name: "avium_init_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "AVIUM",
+    bool_variables: [
+        "AVIUM_FORCE_SET_FAKE_PROP",
+    ],
+    properties: [
+        "cppflags",
+    ],
+}
+
+avium_init_defaults {
+    name: "avium_init_defaults",
+    shared_libs: ["libavium_utils"],
+    soong_config_variables: {
+        AVIUM_FORCE_SET_FAKE_PROP: {
+            cppflags: [
+                "-DAVIUM_FORCE_SET_FAKE_PROP"
+            ],
+        },
+    },
+}
+
 cc_defaults {
     name: "libinit_defaults",
     recovery_available: true,
@@ -261,6 +286,7 @@ cc_defaults {
     target: {
         recovery: {
             cflags: ["-DRECOVERY"],
+            shared_libs: ["libavium_utils"],
             exclude_static_libs: [
                 "libxml2",
             ],
