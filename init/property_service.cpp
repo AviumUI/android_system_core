@@ -63,6 +63,7 @@
 #include <selinux/selinux.h>
 #include <vendorsupport/api_level.h>
 
+#include "avium_utils.h"
 #include "debug_ramdisk.h"
 #include "epoll.h"
 #include "init.h"
@@ -1406,6 +1407,70 @@ static void ProcessBootconfig() {
     });
 }
 
+static void SetPropSpoof() {
+    InitPropertySet("ro.boot.flash.locked", "1");
+    InitPropertySet("ro.boot.vbmeta.device_state", "locked");
+    InitPropertySet("ro.boot.verifiedbootstate", "green");
+    InitPropertySet("ro.boot.flash.locked", "1");
+    InitPropertySet("ro.boot.selinux", "enforcing");
+    InitPropertySet("ro.boot.veritymode", "enforcing");
+    InitPropertySet("ro.boot.warranty_bit", "0");
+    InitPropertySet("ro.warranty_bit", "0");
+    InitPropertySet("ro.debuggable", "0");
+    InitPropertySet("ro.force.debuggable", "0");
+    InitPropertySet("ro.adb.secure", "1");
+    InitPropertySet("ro.secure", "1");
+    InitPropertySet("ro.bootimage.build.type", "user");
+    InitPropertySet("ro.build.type", "user");
+    InitPropertySet("ro.system.build.type", "user");
+    InitPropertySet("ro.system_ext.build.type", "user");
+    InitPropertySet("ro.vendor.build.type", "user");
+    InitPropertySet("ro.vendor_dlkm.build.type", "user");
+    InitPropertySet("ro.product.build.type", "user");
+    InitPropertySet("ro.odm.build.type", "user");
+    InitPropertySet("ro.build.keys", "release-keys");
+    InitPropertySet("ro.build.tags", "release-keys");
+    InitPropertySet("ro.bootimage.build.tags", "release-keys");
+    InitPropertySet("ro.odm.build.tags", "release-keys");
+    InitPropertySet("ro.product.build.tags", "release-keys");
+    InitPropertySet("ro.system.build.tags", "release-keys");
+    InitPropertySet("ro.system_ext.build.tags", "release-keys");
+    InitPropertySet("ro.vendor.build.tags", "release-keys");
+    InitPropertySet("ro.vendor_dlkm.build.tags", "release-keys");
+    InitPropertySet("ro.vendor.boot.warranty_bit", "0");
+    InitPropertySet("ro.vendor.warranty_bit", "0");
+    InitPropertySet("vendor.boot.vbmeta.device_state", "locked");
+    InitPropertySet("vendor.boot.verifiedbootstate", "green");
+    InitPropertySet("oplusboot.verifiedbootstate", "green");
+    InitPropertySet("sys.oem_unlock_allowed", "0");
+}
+
+void CheckFakePropSet() {
+#ifdef AVIUM_FORCE_SET_FAKE_PROP
+        if (IsRecoveryMode()){
+        LOG(INFO) << "In recovery mode, not setting fake properties";
+        return;
+    }
+    LOG(INFO) << "AVIUM_FORCE_FAKE_PROP is set, setting fake properties";
+    SetPropSpoof();
+    InitPropertySet("ro.avium.status_fake_prop", "1");
+    return;
+#endif
+    const std::string avium_config_path = "/metadata/avium/avium_init.cfg";
+    std::map<std::string, bool> config = avium::utils::ParseConfigFile(avium_config_path);
+    if (!avium::utils::IsEnabled(config, "set_fake_prop", false)) {
+        LOG(INFO) << "set_fake_prop is disabled, not setting fake properties";
+        return;
+    }
+    if (IsRecoveryMode()){
+        LOG(INFO) << "In recovery mode, not setting fake properties";
+        return;
+    }
+    LOG(INFO) << "set_fake_prop is enabled, setting fake properties";
+    SetPropSpoof();
+    InitPropertySet("ro.avium.status_fake_prop", "1");
+}
+
 void PropertyInit() {
     selinux_callback cb;
     cb.func_audit = PropertyAuditCallback;
@@ -1422,6 +1487,8 @@ void PropertyInit() {
 
     // If arguments are passed both on the command line and in DT,
     // properties set in DT always have priority over the command-line ones.
+    CheckFakePropSet();
+
     ProcessKernelDt();
     ProcessBootconfig();
     ProcessKernelCmdline();
