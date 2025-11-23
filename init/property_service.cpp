@@ -1471,6 +1471,43 @@ void CheckFakePropSet() {
     InitPropertySet("ro.avium.status_fake_prop", "1");
 }
 
+void SetCustomProperty() {
+    std::string avium_config_path = "/metadata/avium/avium_init.cfg";
+    
+    // parse config file
+    std::map<std::string, std::string> init_config = avium::utils::ParseConfigFile(avium_config_path);
+    
+    if (IsRecoveryMode()){
+        LOG(INFO) << "In recovery mode, not setting custom properties";
+        return;
+    }
+
+    //check if set_custom_prop is enabled
+    if (!avium::utils::IsEnabled(init_config, "set_custom_prop", false)) {
+        LOG(INFO) << "set_custom_prop is disabled, not setting custom properties";
+        return;
+    }
+
+    LOG(INFO) << "set_custom_prop is enabled, setting custom properties";
+
+    std::map<std::string, std::string> custom_props_map;
+    // get custom prop path from config file
+    const std::string avium_custom_prop_path = avium::utils::GetConfigValue(
+        init_config, "custom_prop_path", "/metadata/avium/custom_prop.cfg");
+    
+    custom_props_map = avium::utils::ParseConfigFile(avium_custom_prop_path);
+
+    if (custom_props_map.empty()) {
+        LOG(INFO) << "No custom properties found in " << avium_custom_prop_path;
+        return;
+    }
+    for (const auto& [name, value] : custom_props_map) {
+        LOG(INFO) << "Setting custom property: " << name << " = " << value;
+        InitPropertySet(name, value);
+    }
+    
+}
+
 void PropertyInit() {
     selinux_callback cb;
     cb.func_audit = PropertyAuditCallback;
@@ -1488,6 +1525,7 @@ void PropertyInit() {
     // If arguments are passed both on the command line and in DT,
     // properties set in DT always have priority over the command-line ones.
     CheckFakePropSet();
+    SetCustomProperty();
 
     ProcessKernelDt();
     ProcessBootconfig();
