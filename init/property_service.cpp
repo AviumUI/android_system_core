@@ -1457,8 +1457,8 @@ void CheckFakePropSet() {
     return;
 #endif
     const std::string avium_config_path = "/metadata/avium/avium_init.cfg";
-    std::map<std::string, bool> config = avium::utils::ParseConfigFile(avium_config_path);
-    if (!avium::utils::IsEnabled(config, "set_fake_prop", false)) {
+    std::map<std::string, std::string> init_config = avium::utils::ParseConfigFile(avium_config_path);
+    if (!avium::utils::IsEnabled(init_config, "set_fake_prop", false)) {
         LOG(INFO) << "set_fake_prop is disabled, not setting fake properties";
         return;
     }
