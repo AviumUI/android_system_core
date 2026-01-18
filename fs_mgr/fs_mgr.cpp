@@ -49,6 +49,7 @@
 #include <android-base/chrono_utils.h>
 #include <android-base/file.h>
 #include <android-base/properties.h>
+#include <android-base/scopeguard.h>
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
@@ -96,11 +97,15 @@
 #define SYSFS_EXT4_VERITY "/sys/fs/ext4/features/verity"
 #define SYSFS_EXT4_CASEFOLD "/sys/fs/ext4/features/casefold"
 
+#define SYSFS_F2FS_LINEAR_LOOKUP "/sys/fs/f2fs/features/linear_lookup"
+
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a)))
 
 using android::base::Basename;
 using android::base::GetBoolProperty;
+using android::base::GetIntProperty;
 using android::base::GetUintProperty;
+using android::base::make_scope_guard;
 using android::base::Realpath;
 using android::base::SetProperty;
 using android::base::StartsWith;
@@ -188,14 +193,51 @@ static bool umount_retry(const std::string& mount_point) {
     return umounted;
 }
 
+static const char* get_disable_linear_lookup_option(void) {
+    std::string linear_lookup_support;
+
+    if (!android::base::ReadFileToString(SYSFS_F2FS_LINEAR_LOOKUP, &linear_lookup_support)) {
+        PERROR << "Failed to open " << SYSFS_F2FS_LINEAR_LOOKUP;
+        return nullptr;
+    }
+
+    if (android::base::Trim(linear_lookup_support) != "supported") {
+        PERROR << "Current f2fs linear_lookup not supported by kernel";
+        return nullptr;
+    }
+
+    std::string prop = android::base::GetProperty("persist.fsck.disable_linear_lookup", "");
+    if (prop == "on") {
+        return "--nolinear-lookup=1";
+    } else if (prop == "off") {
+        return "--nolinear-lookup=0";
+    }
+    return nullptr;
+}
+
 static void check_fs(const std::string& blk_device, const std::string& fs_type,
                      const std::string& target, int* fs_stat) {
     int status;
     int ret;
     long tmpmnt_flags = MS_NOATIME | MS_NOEXEC | MS_NOSUID;
     auto tmpmnt_opts = "errors=remount-ro"s;
-    const char* e2fsck_argv[] = {E2FSCK_BIN, "-y", blk_device.c_str()};
+    // Auto repair (aka preen) mode. Fast. Doesn't require `-y`, but can leave some errors
+    // uncorrected, in which case we do full-repair below.
+    const char* e2fsck_argv[] = {E2FSCK_BIN, "-p", blk_device.c_str()};
+    // Full repair.
     const char* e2fsck_forced_argv[] = {E2FSCK_BIN, "-f", "-y", blk_device.c_str()};
+    enum class E2fsckExitCode : int {
+        // e2fsck exit codes taken from the man page
+        NO_ERROR = 0,
+        ERROR_CORRECTED = 1,
+        ERROR_CORRECTED_REBOOT_REQUIRED = 2,
+        ERROR_UNCORRECTED = 4,
+        // Exit codes below can never happen in our case, but listed anyway for completeness
+        OPERATIONAL_ERROR = 8,
+        SYNTAX_ERROR = 16,
+        CANCELED_BY_USER = 32,
+        SHARED_LIB_ERROR = 64,
+    };
 
     if (*fs_stat & FS_STAT_INVALID_MAGIC) {  // will fail, so do not try
         return;
@@ -241,7 +283,8 @@ static void check_fs(const std::string& blk_device, const std::string& fs_type,
                   << " (executable not in system image)";
         } else {
             LINFO << "Running " << E2FSCK_BIN << " on " << realpath(blk_device);
-            if (should_force_check(*fs_stat)) {
+            bool forced = should_force_check(*fs_stat);
+            if (forced) {
                 ret = logwrap_fork_execvp(ARRAY_SIZE(e2fsck_forced_argv), e2fsck_forced_argv,
                                           &status, false, LOG_KLOG | LOG_FILE, false,
                                           FSCK_LOG_FILE);
@@ -256,27 +299,44 @@ static void check_fs(const std::string& blk_device, const std::string& fs_type,
                 *fs_stat |= FS_STAT_FSCK_FAILED;
             } else if (status != 0) {
                 LINFO << "e2fsck returned status 0x" << std::hex << status;
-                *fs_stat |= FS_STAT_FSCK_FS_FIXED;
+                bool corrected = (status & static_cast<int>(E2fsckExitCode::ERROR_CORRECTED)) != 0;
+                bool uncorrected =
+                        (status & static_cast<int>(E2fsckExitCode::ERROR_UNCORRECTED)) != 0;
+                if (corrected && !uncorrected) {
+                    // TODO: nobody seems to be checking this bit??
+                    *fs_stat |= FS_STAT_FSCK_FS_FIXED;
+                } else if (uncorrected && !forced) {
+                    // If uncorrected error remains, re-run with full check. Turning the
+                    // FS_STAT_FSCK_FAILED bit on will make should_force_check to return true
+                    LERROR << "Uncorrected error remains. Trying harder.";
+                    *fs_stat |= FS_STAT_FSCK_FAILED;
+                    check_fs(blk_device, fs_type, target, fs_stat);
+                } else {
+                    *fs_stat |= FS_STAT_FSCK_FAILED;
+                }
             }
         }
     } else if (is_f2fs(fs_type)) {
-        const char* f2fs_fsck_argv[] = {F2FS_FSCK_BIN,     "-a", "-c", "10000", "--debug-cache",
-                                        blk_device.c_str()};
-        const char* f2fs_fsck_forced_argv[] = {
-                F2FS_FSCK_BIN, "-f", "-c", "10000", "--debug-cache", blk_device.c_str()};
-
         if (access(F2FS_FSCK_BIN, X_OK)) {
             LINFO << "Not running " << F2FS_FSCK_BIN << " on " << realpath(blk_device)
                   << " (executable not in system image)";
         } else {
-            if (should_force_check(*fs_stat)) {
-                LINFO << "Running " << F2FS_FSCK_BIN << " -f -c 10000 --debug-cache "
-                      << realpath(blk_device);
-                ret = logwrap_fork_execvp(ARRAY_SIZE(f2fs_fsck_forced_argv), f2fs_fsck_forced_argv,
-                                          &status, false, LOG_KLOG | LOG_FILE, false,
-                                          FSCK_LOG_FILE);
+            const char* linear_lookup_option = get_disable_linear_lookup_option();
+            const char* force = should_force_check(*fs_stat) ? "-f" : "-a";
+
+            if (linear_lookup_option) {
+                const char* f2fs_fsck_argv[] = {
+                        F2FS_FSCK_BIN,     force,           "-c",
+                        "10000",           "--debug-cache", linear_lookup_option,
+                        blk_device.c_str()};
+                LINFO << "Running " << F2FS_FSCK_BIN << " " << force << " -c 10000 --debug-cache "
+                      << linear_lookup_option << " " << realpath(blk_device);
+                ret = logwrap_fork_execvp(ARRAY_SIZE(f2fs_fsck_argv), f2fs_fsck_argv, &status,
+                                          false, LOG_KLOG | LOG_FILE, false, FSCK_LOG_FILE);
             } else {
-                LINFO << "Running " << F2FS_FSCK_BIN << " -a -c 10000 --debug-cache "
+                const char* f2fs_fsck_argv[] = {F2FS_FSCK_BIN, force,           "-c",
+                                                "10000",       "--debug-cache", blk_device.c_str()};
+                LINFO << "Running " << F2FS_FSCK_BIN << " " << force << " -c 10000 --debug-cache "
                       << realpath(blk_device);
                 ret = logwrap_fork_execvp(ARRAY_SIZE(f2fs_fsck_argv), f2fs_fsck_argv, &status,
                                           false, LOG_KLOG | LOG_FILE, false, FSCK_LOG_FILE);
@@ -291,8 +351,10 @@ static void check_fs(const std::string& blk_device, const std::string& fs_type,
             }
         }
     }
+
     android::base::SetProperty("ro.boottime.init.fsck." + Basename(target),
                                std::to_string(t.duration().count()));
+    LINFO << "fsck on " << target << " took " << t.duration();
     return;
 }
 
@@ -833,6 +895,8 @@ static int __mount(const std::string& source, const std::string& target, const F
     std::string checkpoint_opts;
     bool try_f2fs_gc_allowance = is_f2fs(entry.fs_type) && entry.fs_checkpoint_opts.length() > 0;
     bool try_f2fs_fallback = false;
+    bool try_f2fs_quota =
+            is_f2fs(entry.fs_type) && GetIntProperty("ro.product.first_api_level", -1) > 36;
     Timer t;
 
     do {
@@ -850,6 +914,9 @@ static int __mount(const std::string& source, const std::string& target, const F
             checkpoint_opts = "";
         }
         opts = entry.fs_options + checkpoint_opts;
+        if (try_f2fs_quota) {
+            opts += ",usrquota,grpquota,prjquota";
+        }
         if (save_errno == EAGAIN) {
             PINFO << "Retrying mount (source=" << source << ",target=" << target
                   << ",type=" << entry.fs_type << ", gc_allowance=" << gc_allowance << "%)=" << ret
@@ -1994,9 +2061,12 @@ static bool PrepareZramBackingDevice(off64_t size) {
         PERROR << "Cannot open target path: " << file_path;
         return false;
     }
+
+    // Always unlink zram_swap file to prevent file system access.
+    auto unlink_zram_swap_guard = make_scope_guard([] { unlink(file_path); });
+
     if (fallocate(target_fd.get(), 0, 0, size) < 0) {
         PERROR << "Cannot truncate target path: " << file_path;
-        unlink(file_path);
         return false;
     }
 
@@ -2433,25 +2503,11 @@ OverlayfsCheckResult CheckOverlayfs() {
         return {.supported = false};
     }
 
-    if (!use_override_creds) {
-        if (major > 5 || (major == 5 && minor >= 15)) {
-            return {.supported = true, ",userxattr"};
-        }
-        return {.supported = true};
+    if (major > 5 || (major == 5 && minor >= 15)) {
+        return {.supported = true, ",userxattr"};
     }
 
-    // Overlayfs available in the kernel, and patched for override_creds?
-    if (access("/sys/module/overlay/parameters/override_creds", F_OK) == 0) {
-        auto mount_flags = ",override_creds=off"s;
-        if (major > 5 || (major == 5 && minor >= 15)) {
-            mount_flags += ",userxattr"s;
-        }
-        return {.supported = true, .mount_flags = mount_flags};
-    }
-    if (major < 4 || (major == 4 && minor <= 3)) {
-        return {.supported = true};
-    }
-    return {.supported = false};
+    return {.supported = true};
 }
 
 }  // namespace fs_mgr
