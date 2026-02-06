@@ -1392,6 +1392,10 @@ static void SetPropIfEmpty(const std::string& name, const std::string& value) {
 }
 
 static void SetVbmetaBootProps() {
+    const std::string update = GetProperty("persist.sys.vbmeta.update", "true");
+    if (update == "false") {
+        return;
+    }
     const std::string persisted = GetProperty("persist.sys.vbmeta.digest", "");
     if (!persisted.empty() && GetProperty("ro.boot.vbmeta.digest", "").empty()) {
         InitPropertySet("ro.boot.vbmeta.digest", persisted);
