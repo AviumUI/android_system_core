@@ -1417,7 +1417,7 @@ static void SetVbmetaBootProps() {
 }
 
 
-static void SetPropSpoof() {
+static void SetPropSpoof(bool is_no_reboot) {
     std::string error;
     uint32_t res;
 
@@ -1460,15 +1460,22 @@ static void SetPropSpoof() {
     };
 
     for (const auto& [name, value] : props) {
-        res = InitPropertySet(name, value, &error);
-        if (res == PROP_SUCCESS) {
-            LOG(INFO) << "Property '" << name << "' set successfully to '" << value << "'";
+        if (is_no_reboot){
+                LOG(INFO) << "No reboot, Use PropertySetNoSocket to be setting property '" << name << "' to '" << value << "'";
+                res = PropertySetNoSocket(name, value, &error);
         } else {
-            LOG(ERROR) << "Failed to set property '" << name
-                       << "' to '" << value << "': err=" << res << " (" << error << ")";
+                res = InitPropertySet(name, value);
+        }
+        if (res == PROP_SUCCESS) {
+                LOG(INFO) << "Property '" << name << "' set successfully to '" << value << "'";
+        } else {
+                LOG(ERROR) << "Failed to set property '" << name
+                           << "' to '" << value << "': err=" << res << " (" << error << ")";
         }
     }
-    InitPropertySet("ro.avium.status_fake_prop", "1");
+    if (is_no_reboot) {
+        PropertySetNoSocket("persist.avium.status_fake_prop", "1", &error);
+    }
 }
 
 void WatchPropChange(std::string prop_name) {
@@ -1483,6 +1490,7 @@ void WatchPropChange(std::string prop_name) {
             value = GetProperty(prop_name, "");
             if (prop_name == "persist.avium.config.set_fake_prop" && value == "1") {
                 LOG(INFO) << "persist.avium.config.set_fake_prop is set to 1, save config, need to reboot";
+                SetPropSpoof(true);
                 if (avium::utils::ReplaceInputLine("set_fake_prop", "true", "/metadata/avium/avium_init.cfg")) {
                     LOG(INFO) << "Config updated successfully";
                 } else {
@@ -1498,6 +1506,7 @@ void WatchPropChange(std::string prop_name) {
             } else if (prop_name == "persist.sys.vbmeta.digest") {
                 LOG(INFO) << "persist.sys.vbmeta.digest is changed, Set vbmeta boot props";
                 SetVbmetaBootProps();
+                break;
             }
         }
         sleep(3);
@@ -1511,21 +1520,31 @@ void CheckFakePropSet() {
         LOG(INFO) << "In recovery mode, not setting fake properties";
         return;
     }
-    std::thread monitor_changed_vbmeta_prop(WatchPropChange, "persist.sys.vbmeta.digest");
-    monitor_changed_vbmeta_prop.detach();
+// If AVIUM_FORCE_SET_FAKE_PROP is defined
+// Ingore the config value and always set
 #ifdef AVIUM_FORCE_SET_FAKE_PROP
     LOG(INFO) << "AVIUM_FORCE_FAKE_PROP is set, setting fake properties";
-    SetPropSpoof();
+    SetPropSpoof(false);
+    // Use a thread to wait framework to set vbmeta digest prop to persist.sys.vbmeta.digest, then set vbmeta boot props accordingly
+    std::thread monitor_changed_vbmeta_prop(WatchPropChange, "persist.sys.vbmeta.digest");
+    monitor_changed_vbmeta_prop.detach();
+    InitPropertySet("ro.avium.force.status_fake_prop", "1");
     return;
 #endif
 
+    std::thread monitor_changed_set_fake_prop(WatchPropChange, "persist.avium.config.set_fake_prop");
+    monitor_changed_set_fake_prop.detach();
     if (!avium::utils::IsEnabled(init_config, "set_fake_prop", false)) {
         LOG(INFO) << "set_fake_prop is disabled, not setting fake properties";
         return;
     }
 
     LOG(INFO) << "set_fake_prop is enabled, setting fake properties";
-    SetPropSpoof();
+    SetPropSpoof(false);
+    // Use a thread to wait framework to set vbmeta digest prop to persist.sys.vbmeta.digest, then set vbmeta boot props accordingly
+    std::thread monitor_changed_vbmeta_prop(WatchPropChange, "persist.sys.vbmeta.digest");
+    monitor_changed_vbmeta_prop.detach();
+    InitPropertySet("ro.avium.status_fake_prop", "1");
 }
 
 void SetCustomProperty() {
