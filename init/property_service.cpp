@@ -1376,41 +1376,57 @@ static void ProcessBootconfig() {
 }
 
 static void SetPropSpoof() {
-    InitPropertySet("ro.boot.flash.locked", "1");
-    InitPropertySet("ro.boot.vbmeta.device_state", "locked");
-    InitPropertySet("ro.boot.verifiedbootstate", "green");
-    InitPropertySet("ro.boot.flash.locked", "1");
-    InitPropertySet("ro.boot.selinux", "enforcing");
-    InitPropertySet("ro.boot.veritymode", "enforcing");
-    InitPropertySet("ro.boot.warranty_bit", "0");
-    InitPropertySet("ro.warranty_bit", "0");
-    InitPropertySet("ro.debuggable", "0");
-    InitPropertySet("ro.force.debuggable", "0");
-    InitPropertySet("ro.adb.secure", "1");
-    InitPropertySet("ro.secure", "1");
-    InitPropertySet("ro.bootimage.build.type", "user");
-    InitPropertySet("ro.build.type", "user");
-    InitPropertySet("ro.system.build.type", "user");
-    InitPropertySet("ro.system_ext.build.type", "user");
-    InitPropertySet("ro.vendor.build.type", "user");
-    InitPropertySet("ro.vendor_dlkm.build.type", "user");
-    InitPropertySet("ro.product.build.type", "user");
-    InitPropertySet("ro.odm.build.type", "user");
-    InitPropertySet("ro.build.keys", "release-keys");
-    InitPropertySet("ro.build.tags", "release-keys");
-    InitPropertySet("ro.bootimage.build.tags", "release-keys");
-    InitPropertySet("ro.odm.build.tags", "release-keys");
-    InitPropertySet("ro.product.build.tags", "release-keys");
-    InitPropertySet("ro.system.build.tags", "release-keys");
-    InitPropertySet("ro.system_ext.build.tags", "release-keys");
-    InitPropertySet("ro.vendor.build.tags", "release-keys");
-    InitPropertySet("ro.vendor_dlkm.build.tags", "release-keys");
-    InitPropertySet("ro.vendor.boot.warranty_bit", "0");
-    InitPropertySet("ro.vendor.warranty_bit", "0");
-    InitPropertySet("vendor.boot.vbmeta.device_state", "locked");
-    InitPropertySet("vendor.boot.verifiedbootstate", "green");
-    InitPropertySet("oplusboot.verifiedbootstate", "green");
-    InitPropertySet("sys.oem_unlock_allowed", "0");
+    std::string error;
+    uint32_t res;
+
+    const std::pair<const char*, const char*> props[] = {
+        {"ro.boot.flash.locked", "1"},
+        {"ro.boot.vbmeta.device_state", "locked"},
+        {"ro.boot.verifiedbootstate", "green"},
+        {"ro.boot.veritymode", "enforcing"},
+        {"ro.boot.warranty_bit", "0"},
+        {"ro.warranty_bit", "0"},
+        {"ro.debuggable", "0"},
+        {"ro.force.debuggable", "0"},
+        {"ro.adb.secure", "1"},
+        {"ro.secure", "1"},
+        {"ro.bootimage.build.type", "user"},
+        {"ro.build.type", "user"},
+        {"ro.build.keys", "release-keys"},
+        {"ro.build.tags", "release-keys"},
+        {"ro.system.build.tags", "release-keys"},
+        {"ro.product.build.type", "user"},
+        {"ro.system_dlkm.build.type", "user"},
+        {"ro.odm.build.type", "user"},
+        {"ro.system.build.type", "user"},
+        {"ro.system_ext.build.type", "user"},
+        {"ro.vendor.build.type", "user"},
+        {"ro.vendor_dlkm.build.type", "user"},
+        {"ro.vendor.boot.warranty_bit", "0"},
+        {"ro.vendor.warranty_bit", "0"},
+        {"vendor.boot.vbmeta.device_state", "locked"},
+        {"vendor.boot.verifiedbootstate", "green"},
+        {"oplusboot.verifiedbootstate", "green"},
+        {"sys.oem_unlock_allowed", "0"},
+        {"ro.crypto.state", "encrypted"}
+        {"ro.oem_unlock_supported", "0"},
+        {"ro.crypto.state", "encrypted"},
+        {"ro.boot.flash.locked", "1"},
+        {"ro.is_ever_orange", "0"},
+        {"ro.secureboot.devicelock", "1"},
+        {"ro.secureboot.lockstate", "locked"}
+    };
+
+    for (const auto& [name, value] : props) {
+        res = InitPropertySet(name, value, &error);
+        if (res == PROP_SUCCESS) {
+            LOG(INFO) << "Property '" << name << "' set successfully to '" << value << "'";
+        } else {
+            LOG(ERROR) << "Failed to set property '" << name
+                       << "' to '" << value << "': err=" << res << " (" << error << ")";
+        }
+    }
+}
 }
 
 void CheckFakePropSet() {
