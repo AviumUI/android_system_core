@@ -37,6 +37,10 @@
 #include <unistd.h>
 #include <wchar.h>
 
+#include <sys/ioctl.h>
+#include <linux/fs.h>
+#include <linux/blkpg.h>
+
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1375,6 +1379,44 @@ static void ProcessBootconfig() {
     });
 }
 
+static void SetPropIfEmpty(const std::string& name, const std::string& value) {
+    std::string cur = GetProperty(name, "");
+    if (cur.empty()) {
+        std::string error;
+        auto res = PropertySetNoSocket(name, value, &error);
+        if (res != PROP_SUCCESS) {
+            LOG(ERROR) << "Failed to set property '" << name
+                       << "' to '" << value << "': err=" << res << " (" << error << ")";
+        }
+    }
+}
+
+static void SetVbmetaBootProps() {
+    const std::string persisted = GetProperty("persist.sys.vbmeta.digest", "");
+    if (!persisted.empty() && GetProperty("ro.boot.vbmeta.digest", "").empty()) {
+        InitPropertySet("ro.boot.vbmeta.digest", persisted);
+    }
+
+    SetPropIfEmpty("ro.boot.vbmeta.device_state", "locked");
+    SetPropIfEmpty("ro.boot.vbmeta.invalidate_on_error", "yes");
+    SetPropIfEmpty("ro.boot.vbmeta.avb_version", "1.0");
+    SetPropIfEmpty("ro.boot.vbmeta.hash_alg", "sha256");
+
+    {
+        std::string slot_suffix = GetProperty("ro.boot.slot_suffix", "");
+        std::string path = "/dev/block/by-name/vbmeta";
+        if (!slot_suffix.empty()) path += slot_suffix;
+        int fd = TEMP_FAILURE_RETRY(open(path.c_str(), O_RDONLY | O_CLOEXEC));
+        uint64_t blksz = 0;
+        if (ioctl(fd, BLKGETSIZE64, &blksz) == 0 && blksz > 0) {
+            std::string blksz_str = std::to_string(blksz);
+            SetPropIfEmpty("ro.boot.vbmeta.size", blksz_str);
+        }
+        close(fd);
+    }
+}
+
+
 static void SetPropSpoof() {
     std::string error;
     uint32_t res;
@@ -1426,32 +1468,64 @@ static void SetPropSpoof() {
                        << "' to '" << value << "': err=" << res << " (" << error << ")";
         }
     }
+    InitPropertySet("ro.avium.status_fake_prop", "1");
+}
+
+void WatchPropChange(std::string prop_name) {
+    std::string value = GetProperty(prop_name, "");
+    if (IsRecoveryMode()){
+        LOG(INFO) << "In recovery mode, stopping watching property '" << prop_name << "'";
+        return;
+    }
+    while (true) {
+        if (GetProperty(prop_name, "") != value) {
+            LOG(INFO) << "Property '" << prop_name << "' is set to '" << value << "'";
+            value = GetProperty(prop_name, "");
+            if (prop_name == "persist.avium.config.set_fake_prop" && value == "1") {
+                LOG(INFO) << "persist.avium.config.set_fake_prop is set to 1, save config, need to reboot";
+                if (avium::utils::ReplaceInputLine("set_fake_prop", "true", "/metadata/avium/avium_init.cfg")) {
+                    LOG(INFO) << "Config updated successfully";
+                } else {
+                    LOG(ERROR) << "Failed to update config";
+                }
+            } else if (prop_name == "persist.avium.config.set_fake_prop" && value == "0") {
+                LOG(INFO) << "persist.avium.config.set_fake_prop is set to 0, save config, need to reboot";
+                if (avium::utils::ReplaceInputLine("set_fake_prop", "false", "/metadata/avium/avium_init.cfg")) {
+                    LOG(INFO) << "Config updated successfully";
+                } else {
+                    LOG(ERROR) << "Failed to update config";
+                }
+            } else if (prop_name == "persist.sys.vbmeta.digest") {
+                LOG(INFO) << "persist.sys.vbmeta.digest is changed, Set vbmeta boot props";
+                SetVbmetaBootProps();
+            }
+        }
+        sleep(3);
+    }
 }
 
 void CheckFakePropSet() {
-#ifdef AVIUM_FORCE_SET_FAKE_PROP
-        if (IsRecoveryMode()){
-        LOG(INFO) << "In recovery mode, not setting fake properties";
-        return;
-    }
-    LOG(INFO) << "AVIUM_FORCE_FAKE_PROP is set, setting fake properties";
-    SetPropSpoof();
-    InitPropertySet("ro.avium.status_fake_prop", "1");
-    return;
-#endif
     const std::string avium_config_path = "/metadata/avium/avium_init.cfg";
     std::map<std::string, std::string> init_config = avium::utils::ParseConfigFile(avium_config_path);
-    if (!avium::utils::IsEnabled(init_config, "set_fake_prop", false)) {
-        LOG(INFO) << "set_fake_prop is disabled, not setting fake properties";
-        return;
-    }
     if (IsRecoveryMode()){
         LOG(INFO) << "In recovery mode, not setting fake properties";
         return;
     }
+    std::thread monitor_changed_vbmeta_prop(WatchPropChange, "persist.sys.vbmeta.digest");
+    monitor_changed_vbmeta_prop.detach();
+#ifdef AVIUM_FORCE_SET_FAKE_PROP
+    LOG(INFO) << "AVIUM_FORCE_FAKE_PROP is set, setting fake properties";
+    SetPropSpoof();
+    return;
+#endif
+
+    if (!avium::utils::IsEnabled(init_config, "set_fake_prop", false)) {
+        LOG(INFO) << "set_fake_prop is disabled, not setting fake properties";
+        return;
+    }
+
     LOG(INFO) << "set_fake_prop is enabled, setting fake properties";
     SetPropSpoof();
-    InitPropertySet("ro.avium.status_fake_prop", "1");
 }
 
 void SetCustomProperty() {
