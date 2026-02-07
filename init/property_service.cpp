@@ -1446,24 +1446,21 @@ static void SetPropSpoof() {
 }
 
 void CheckFakePropSet() {
-#ifdef AVIUM_FORCE_SET_FAKE_PROP
-        if (IsRecoveryMode()){
+    const std::string avium_config_path = "/metadata/avium/avium_init.cfg";
+    std::map<std::string, std::string> init_config = avium::utils::ParseConfigFile(avium_config_path);
+    if (IsRecoveryMode()){
         LOG(INFO) << "In recovery mode, not setting fake properties";
         return;
     }
+#ifdef AVIUM_FORCE_SET_FAKE_PROP
     LOG(INFO) << "AVIUM_FORCE_FAKE_PROP is set, setting fake properties";
     SetPropSpoof();
     InitPropertySet("ro.avium.status_fake_prop", "1");
     return;
 #endif
-    const std::string avium_config_path = "/metadata/avium/avium_init.cfg";
-    std::map<std::string, std::string> init_config = avium::utils::ParseConfigFile(avium_config_path);
+
     if (!avium::utils::IsEnabled(init_config, "set_fake_prop", false)) {
         LOG(INFO) << "set_fake_prop is disabled, not setting fake properties";
-        return;
-    }
-    if (IsRecoveryMode()){
-        LOG(INFO) << "In recovery mode, not setting fake properties";
         return;
     }
     LOG(INFO) << "set_fake_prop is enabled, setting fake properties";
